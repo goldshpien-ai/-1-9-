@@ -54,7 +54,7 @@
 
   <div id="loading">
     <div class="spinner"></div>
-    <div>Загрузка AR…</div>
+    <div id="loading-text">Загрузка AR…</div>
   </div>
 
   <div id="hint" class="hidden">
@@ -79,141 +79,148 @@
     style="width:100%;height:100%;">
 
     <a-camera position="0 0 0" look-controls="enabled: false" cursor="fuse: false;"></a-camera>
-
-    <!-- Цели создаются динамически скриптом ниже -->
   </a-scene>
 
   <script>
     // ---------------------------------------------------------------
-    // КОНФИГУРАЦИЯ
+    // 1. Определяем, сколько учеников: пробуем загрузить видео по порядку
+    //    Пока файл существует — считаем, что ученик есть.
+    //    Как только 404 — останавливаемся.
     // ---------------------------------------------------------------
-    // targetIndex -> путь к видео
-    //   0      : фото A (общее для всех)
-    //   1      : фото B (общее для всех)
-    //   2..26  : портреты учеников 1..25
-    // ---------------------------------------------------------------
-    const CONFIG = {
-      videoA: './videos/video-A.mp4',
-      videoB: './videos/video-B.mp4',
-      totalStudents: 25,
-      studentVideo: (n) => `./videos/video-C-${String(n).padStart(2, '0')}.mp4`,
-    };
-
-    // Карта: targetIndex -> src
-    const targetToVideo = {};
-    targetToVideo[0] = CONFIG.videoA;
-    targetToVideo[1] = CONFIG.videoB;
-    for (let i = 1; i <= CONFIG.totalStudents; i++) {
-      targetToVideo[i + 1] = CONFIG.studentVideo(i);
+    async function detectStudentCount(maxCheck = 200) {
+      let count = 0;
+      for (let i = 1; i <= maxCheck; i++) {
+        const url = `./videos/video-C-${String(i).padStart(2, '0')}.mp4`;
+        const exists = await fileExists(url);
+        if (!exists) break;
+        count = i;
+      }
+      return count;
     }
 
-    const TOTAL_TARGETS = 2 + CONFIG.totalStudents; // 27
-
-    // ---------------------------------------------------------------
-    // Динамически создаём <a-entity> для каждой цели
-    // ---------------------------------------------------------------
-    const scene = document.querySelector('a-scene');
-
-    for (let idx = 0; idx < TOTAL_TARGETS; idx++) {
-      const entity = document.createElement('a-entity');
-      entity.setAttribute('mindar-image-target', `targetIndex: ${idx}`);
-      entity.setAttribute('data-index', String(idx));
-      entity.setAttribute('visible', 'false');
-
-      const video = document.createElement('a-video');
-      video.setAttribute('width', '1');
-      video.setAttribute('height', '1');
-      video.setAttribute('position', '0 0 0');
-      video.setAttribute('playsinline', '');
-      video.setAttribute('webkit-playsinline', '');
-      video.setAttribute('crossorigin', 'anonymous');
-      // src подставим при targetFound
-
-      entity.appendChild(video);
-      scene.appendChild(entity);
+    function fileExists(url) {
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('HEAD', url, true);
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            resolve(xhr.status >= 200 && xhr.status < 400);
+          }
+        };
+        xhr.onerror = () => resolve(false);
+        xhr.send();
+      });
     }
 
     // ---------------------------------------------------------------
-    // Обработка появления / пропадания цели
+    // 2. Основная инициализация
     // ---------------------------------------------------------------
-    scene.addEventListener('targetFound', (e) => {
-      const idx = e.detail.targetIndex;
-      const src = targetToVideo[idx];
-      if (!src) return;
+    (async function init() {
+      const loadingText = document.getElementById('loading-text');
+      loadingText.textContent = 'Ищем видео…';
 
-      const entity = document.querySelector(`[data-index="${idx}"]`);
-      if (!entity) return;
+      const totalStudents = await detectStudentCount();
+      console.log('Найдено учеников:', totalStudents);
 
-      const videoEl = entity.querySelector('a-video');
-      videoEl.setAttribute('src', src);
+      if (totalStudents === 0) {
+        loadingText.textContent = 'Видео не найдены. Проверьте папку videos/.';
+        return;
+      }
 
-      // Ждём загрузки метаданных и запускаем воспроизведение
-      const tryPlay = () => {
+      // Карта: targetIndex -> src
+      const targetToVideo = {};
+      targetToVideo[0] = './videos/video-A.mp4';
+      targetToVideo[1] = './videos/video-B.mp4';
+      for (let i = 1; i <= totalStudents; i++) {
+        targetToVideo[i + 1] = `./videos/video-C-${String(i).padStart(2, '0')}.mp4`;
+      }
+
+      const TOTAL_TARGETS = 2 + totalStudents;
+
+      const scene = document.querySelector('a-scene');
+
+      // Создаём <a-entity> для каждой цели
+      for (let idx = 0; idx < TOTAL_TARGETS; idx++) {
+        const entity = document.createElement('a-entity');
+        entity.setAttribute('mindar-image-target', `targetIndex: ${idx}`);
+        entity.setAttribute('data-index', String(idx));
+        entity.setAttribute('visible', 'false');
+
+        const video = document.createElement('a-video');
+        video.setAttribute('width', '1');
+        video.setAttribute('height', '1');
+        video.setAttribute('position', '0 0 0');
+        video.setAttribute('playsinline', '');
+        video.setAttribute('webkit-playsinline', '');
+        video.setAttribute('crossorigin', 'anonymous');
+
+        entity.appendChild(video);
+        scene.appendChild(entity);
+      }
+
+      // Обработчики
+      scene.addEventListener('targetFound', (e) => {
+        const idx = e.detail.targetIndex;
+        const src = targetToVideo[idx];
+        if (!src) return;
+
+        const entity = document.querySelector(`[data-index="${idx}"]`);
+        if (!entity) return;
+
+        const videoEl = entity.querySelector('a-video');
+        videoEl.setAttribute('src', src);
+
+        const tryPlay = () => {
+          const mesh = videoEl.getObject3D('mesh');
+          const video = mesh && mesh.material && mesh.material.map && mesh.material.map.image;
+          if (video && typeof video.play === 'function') {
+            video.currentTime = 0;
+            video.loop = true;
+            video.muted = false;
+            video.play().catch(() => {
+              video.muted = true;
+              video.play().catch(() => {});
+            });
+          }
+        };
+        setTimeout(tryPlay, 100);
+
+        entity.setAttribute('visible', 'true');
+        document.getElementById('hint').classList.add('hidden');
+      });
+
+      scene.addEventListener('targetLost', (e) => {
+        const idx = e.detail.targetIndex;
+        const entity = document.querySelector(`[data-index="${idx}"]`);
+        if (!entity) return;
+
+        const videoEl = entity.querySelector('a-video');
         const mesh = videoEl.getObject3D('mesh');
         const video = mesh && mesh.material && mesh.material.map && mesh.material.map.image;
-        if (video && typeof video.play === 'function') {
-          video.currentTime = 0;
-          video.loop = true;
-          video.muted = false;
-          video.play().catch(() => {
-            // Если браузер блокирует звук — играем без него
-            video.muted = true;
-            video.play().catch(() => {});
+        if (video && typeof video.pause === 'function') video.pause();
+
+        entity.setAttribute('visible', 'false');
+        document.getElementById('hint').classList.remove('hidden');
+      });
+
+      scene.addEventListener('loaded', () => {
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('hint').classList.remove('hidden');
+      });
+
+      // Ошибки камеры
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia({ video: true })
+          .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+          .catch((err) => {
+            document.getElementById('error-text').textContent = err.message || String(err);
+            document.getElementById('error').classList.add('visible');
           });
-        }
-      };
-
-      // Даём A-Frame время создать материал
-      setTimeout(tryPlay, 100);
-
-      entity.setAttribute('visible', 'true');
-      document.getElementById('hint').classList.add('hidden');
-    });
-
-    scene.addEventListener('targetLost', (e) => {
-      const idx = e.detail.targetIndex;
-      const entity = document.querySelector(`[data-index="${idx}"]`);
-      if (!entity) return;
-
-      const videoEl = entity.querySelector('a-video');
-      const mesh = videoEl.getObject3D('mesh');
-      const video = mesh && mesh.material && mesh.material.map && mesh.material.map.image;
-      if (video && typeof video.pause === 'function') video.pause();
-
-      entity.setAttribute('visible', 'false');
-      document.getElementById('hint').classList.remove('hidden');
-    });
-
-    // ---------------------------------------------------------------
-    // Прячем спиннер, когда сцена готова
-    // ---------------------------------------------------------------
-    scene.addEventListener('loaded', () => {
-      document.getElementById('loading').classList.add('hidden');
-      document.getElementById('hint').classList.remove('hidden');
-    });
-
-    // ---------------------------------------------------------------
-    // Ошибки камеры
-    // ---------------------------------------------------------------
-    window.addEventListener('error', (e) => {
-      const msg = String(e.message || '');
-      if (msg.toLowerCase().includes('camera') || msg.toLowerCase().includes('getusermedia')) {
-        document.getElementById('error-text').textContent = msg;
+      } else {
+        document.getElementById('error-text').textContent = 'Браузер не поддерживает камеру';
         document.getElementById('error').classList.add('visible');
       }
-    });
-
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ video: true })
-        .then((stream) => stream.getTracks().forEach((t) => t.stop()))
-        .catch((err) => {
-          document.getElementById('error-text').textContent = err.message || String(err);
-          document.getElementById('error').classList.add('visible');
-        });
-    } else {
-      document.getElementById('error-text').textContent = 'Браузер не поддерживает камеру';
-      document.getElementById('error').classList.add('visible');
-    }
+    })();
   </script>
 
 </body>
