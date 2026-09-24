@@ -1,98 +1,220 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>AR Альбом</title>
+  <link rel="icon" href="./fav.png">
+
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-  <link rel="icon" href="public/fav.png">
-  <title>Живой фотоальбом</title>
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    .a-enter-vr, .a-enter-ar { display: none !important; }
+
+    #loading {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px;
+      background: #111; color: #fff; font-family: sans-serif;
+    }
+    #loading.hidden { display: none; }
+
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid #333;
+      border-top-color: #4fc3f7;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #hint {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      padding: 10px 18px; border-radius: 999px;
+      background: rgba(0,0,0,0.6); color: #fff;
+      font-family: sans-serif; font-size: 14px;
+      pointer-events: none; transition: opacity 0.4s;
+      z-index: 100;
+    }
+    #hint.hidden { opacity: 0; }
+
+    #error {
+      position: fixed; inset: 0; z-index: 10000;
+      display: none; align-items: center; justify-content: center;
+      flex-direction: column; gap: 12px; padding: 24px;
+      background: #111; color: #fff; font-family: sans-serif;
+      text-align: center;
+    }
+    #error.visible { display: flex; }
+  </style>
 </head>
 <body>
-  <a-scene mindar-image="imageTargetSrc: public/targets.mind; uiScanning: no" color-space="sRGB"
-    renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false"
-    device-orientation-permission-ui="enabled: false">
 
-        <a-assets>
-      <!-- Три видео: id должны быть уникальными -->
-      <video id="vid0" src=" public/video1.mp4" autoplay loop muted playsinline webkit-playsinline></video>
-      <video id="vid1" src=" public/video2.mp4" autoplay loop muted playsinline webkit-playsinline></video>
-      <video id="vid2" src=" public/video3.mp4" autoplay loop muted playsinline webkit-playsinline></video>
-    </a-assets>
-    
-    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>Загрузка AR…</div>
+  </div>
 
-       <!-- ЦЕЛЬ 0: Первое фото (первое в компиляторе) -->
-    <a-entity mindar-image-target="targetIndex: 0">
-      <a-plane src="#vid0" position="0 0 0" height="1.333" width="1" rotation="0 0 0"></a-plane>
-    </a-entity>
+  <div id="hint" class="hidden">
+    Наведите камеру на портрет или фотографию
+  </div>
 
-    <!-- ЦЕЛЬ 1: Второе фото -->
-    <a-entity mindar-image-target="targetIndex: 1">
-      <a-plane src="#vid1" position="0 0 0" height="1.5" width="1" rotation="0 0 0"></a-plane>
-    </a-entity>
+  <div id="error">
+    <h2>Не удалось запустить камеру</h2>
+    <p id="error-text"></p>
+    <p style="opacity:0.7;font-size:14px">
+      Проверьте, что сайт открыт по HTTPS и вы разрешили доступ к камере.
+    </p>
+  </div>
 
-    <!-- ЦЕЛЬ 2: Третье фото -->
-    <a-entity mindar-image-target="targetIndex: 2">
-      <a-plane src="#vid2" position="0 0 0" height="0.5625" width="1" rotation="0 0 0"></a-plane>
-    </a-entity>
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind; maxTrack: 1; uiLoading: no; uiError: no; uiScanning: no;"
+    color-space="sRGB"
+    renderer="colorManagement: true, physicallyCorrectLights; antialias: true; alpha: true;"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    embedded
+    style="width:100%;height:100%;">
 
+    <a-camera position="0 0 0" look-controls="enabled: false" cursor="fuse: false;"></a-camera>
+
+    <!-- Цели создаются динамически скриптом ниже -->
   </a-scene>
 
   <script>
-    // Флаг: false = звук выключен, true = включён
-  let soundOn = false;
+    // ---------------------------------------------------------------
+    // КОНФИГУРАЦИЯ
+    // ---------------------------------------------------------------
+    // targetIndex -> путь к видео
+    //   0      : фото A (общее для всех)
+    //   1      : фото B (общее для всех)
+    //   2..26  : портреты учеников 1..25
+    // ---------------------------------------------------------------
+    const CONFIG = {
+      videoA: './videos/video-A.mp4',
+      videoB: './videos/video-B.mp4',
+      totalStudents: 25,
+      studentVideo: (n) => `./videos/video-C-${String(n).padStart(2, '0')}.mp4`,
+    };
 
-  window.addEventListener("click", () => {
-    // Переключаем флаг
-    soundOn = !soundOn;
-
-    document.querySelectorAll('video').forEach(video => {
-      video.muted = !soundOn;
-
-      // На всякий случай перезапускаем воспроизведение
-      video.play().catch(error => {
-        console.log("Video play error:", error);
-      });
-    });
-
-    // Показать пользователю текущее состояние
-    showSoundStatus(soundOn);
-  });
-
-  // Небольшой индикатор в углу экрана
-  function showSoundStatus(isOn) {
-    let indicator = document.getElementById("sound-indicator");
-    if (!indicator) {
-      indicator = document.createElement("div");
-      indicator.id = "sound-indicator";
-      indicator.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(0, 0, 0, 0.7);
-        color: white;
-        padding: 10px 20px;
-        border-radius: 20px;
-        font-family: sans-serif;
-        font-size: 16px;
-        z-index: 9999;
-        transition: opacity 0.3s;
-        pointer-events: none;
-      `;
-      document.body.appendChild(indicator);
+    // Карта: targetIndex -> src
+    const targetToVideo = {};
+    targetToVideo[0] = CONFIG.videoA;
+    targetToVideo[1] = CONFIG.videoB;
+    for (let i = 1; i <= CONFIG.totalStudents; i++) {
+      targetToVideo[i + 1] = CONFIG.studentVideo(i);
     }
 
-    indicator.textContent = isOn ? "🔊 Звук включён" : "🔇 Звук выключен";
-    indicator.style.opacity = "1";
+    const TOTAL_TARGETS = 2 + CONFIG.totalStudents; // 27
 
-    // Скрываем через 1.5 секунды
-    clearTimeout(window._soundTimer);
-    window._soundTimer = setTimeout(() => {
-      indicator.style.opacity = "0";
-    }, 1500);
-   }
+    // ---------------------------------------------------------------
+    // Динамически создаём <a-entity> для каждой цели
+    // ---------------------------------------------------------------
+    const scene = document.querySelector('a-scene');
+
+    for (let idx = 0; idx < TOTAL_TARGETS; idx++) {
+      const entity = document.createElement('a-entity');
+      entity.setAttribute('mindar-image-target', `targetIndex: ${idx}`);
+      entity.setAttribute('data-index', String(idx));
+      entity.setAttribute('visible', 'false');
+
+      const video = document.createElement('a-video');
+      video.setAttribute('width', '1');
+      video.setAttribute('height', '1');
+      video.setAttribute('position', '0 0 0');
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.setAttribute('crossorigin', 'anonymous');
+      // src подставим при targetFound
+
+      entity.appendChild(video);
+      scene.appendChild(entity);
+    }
+
+    // ---------------------------------------------------------------
+    // Обработка появления / пропадания цели
+    // ---------------------------------------------------------------
+    scene.addEventListener('targetFound', (e) => {
+      const idx = e.detail.targetIndex;
+      const src = targetToVideo[idx];
+      if (!src) return;
+
+      const entity = document.querySelector(`[data-index="${idx}"]`);
+      if (!entity) return;
+
+      const videoEl = entity.querySelector('a-video');
+      videoEl.setAttribute('src', src);
+
+      // Ждём загрузки метаданных и запускаем воспроизведение
+      const tryPlay = () => {
+        const mesh = videoEl.getObject3D('mesh');
+        const video = mesh && mesh.material && mesh.material.map && mesh.material.map.image;
+        if (video && typeof video.play === 'function') {
+          video.currentTime = 0;
+          video.loop = true;
+          video.muted = false;
+          video.play().catch(() => {
+            // Если браузер блокирует звук — играем без него
+            video.muted = true;
+            video.play().catch(() => {});
+          });
+        }
+      };
+
+      // Даём A-Frame время создать материал
+      setTimeout(tryPlay, 100);
+
+      entity.setAttribute('visible', 'true');
+      document.getElementById('hint').classList.add('hidden');
+    });
+
+    scene.addEventListener('targetLost', (e) => {
+      const idx = e.detail.targetIndex;
+      const entity = document.querySelector(`[data-index="${idx}"]`);
+      if (!entity) return;
+
+      const videoEl = entity.querySelector('a-video');
+      const mesh = videoEl.getObject3D('mesh');
+      const video = mesh && mesh.material && mesh.material.map && mesh.material.map.image;
+      if (video && typeof video.pause === 'function') video.pause();
+
+      entity.setAttribute('visible', 'false');
+      document.getElementById('hint').classList.remove('hidden');
+    });
+
+    // ---------------------------------------------------------------
+    // Прячем спиннер, когда сцена готова
+    // ---------------------------------------------------------------
+    scene.addEventListener('loaded', () => {
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('hint').classList.remove('hidden');
+    });
+
+    // ---------------------------------------------------------------
+    // Ошибки камеры
+    // ---------------------------------------------------------------
+    window.addEventListener('error', (e) => {
+      const msg = String(e.message || '');
+      if (msg.toLowerCase().includes('camera') || msg.toLowerCase().includes('getusermedia')) {
+        document.getElementById('error-text').textContent = msg;
+        document.getElementById('error').classList.add('visible');
+      }
+    });
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+        .catch((err) => {
+          document.getElementById('error-text').textContent = err.message || String(err);
+          document.getElementById('error').classList.add('visible');
+        });
+    } else {
+      document.getElementById('error-text').textContent = 'Браузер не поддерживает камеру';
+      document.getElementById('error').classList.add('visible');
+    }
   </script>
+
 </body>
 </html>
